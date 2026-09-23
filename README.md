@@ -6,7 +6,7 @@ Includes a live **Streamlit dashboard** that visualizes vibration, similarity sc
 
 ---
 
-## 📌 Overview
+## Overview
 
 Conventional threshold-based motor monitoring misses subtle, early-stage faults like imbalance, misalignment, and speed instability. This project implements an **embedded machine learning** pipeline that:
 
@@ -19,7 +19,7 @@ The entire trained model runs **on-chip** with no retraining or cloud dependency
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```
 Button 1/2/3 ──GPIO──▶ STM32F410RB ──PWM──▶ L298N Motor Driver ──▶ DC Motor
@@ -53,7 +53,7 @@ START → Init Peripherals → Wait for button → Set motor mode → Generate P
 
 ---
 
-## 🔧 Hardware
+## Hardware
 
 | Component | Role |
 |---|---|
@@ -69,7 +69,7 @@ START → Init Peripherals → Wait for button → Set motor mode → Generate P
 
 ---
 
-## 🧠 ML Pipeline (NanoEdge AI Studio)
+## ML Pipeline (NanoEdge AI Studio)
 
 The vibration/current dataset was fed into **ST's NanoEdge AI Studio**, which auto-benchmarks and compiles an optimized, edge-deployable anomaly detection library:
 
@@ -86,7 +86,7 @@ The vibration/current dataset was fed into **ST's NanoEdge AI Studio**, which au
 
 ---
 
-## 📊 Dataset
+## Dataset
 
 | | |
 |---|---|
@@ -98,7 +98,7 @@ The vibration/current dataset was fed into **ST's NanoEdge AI Studio**, which au
 
 ---
 
-## 📈 Results
+## Results
 
 ### Model performance (best library, ID 35)
 
@@ -119,13 +119,13 @@ The vibration/current dataset was fed into **ST's NanoEdge AI Studio**, which au
 | **Actual Nominal** | 1,991 | 40 |
 | **Actual Anomaly** | 345 | 4,192 |
 
-![Model performance and confusion matrix](assets/model_performance.jpeg)
+![Model performance and confusion matrix](images/model_performance.jpeg)
 
 ### Cross-comparison across candidate libraries
 
 Multiple libraries were benchmarked to select the highest-accuracy, lowest-footprint configuration:
 
-![Library accuracy comparison](assets/library_performance.jpeg)
+![Library accuracy comparison](images/library_performance.jpeg)
 
 ### PC emulation validation
 
@@ -136,15 +136,15 @@ Before flashing to hardware, the model was validated on a PC emulator against kn
 
 | Abnormal condition emulation | Normal condition emulation |
 |---|---|
-| ![Similarity - abnormal condition](assets/similarity_1.jpeg) | ![Similarity - normal condition](assets/similarity_2.jpeg) |
+| ![Similarity - abnormal condition](images/similarity_1.jpeg) | ![Similarity - normal condition](images/similarity_2.jpeg) |
 
 ### Accuracy across experiments
 
-![Accuracy across benchmarked experiments](assets/accuracies.jpeg)
+![Accuracy across benchmarked experiments](images/accuracies.jpeg)
 
 ---
 
-## 🖥️ Real-Time Dashboard
+## Real-Time Dashboard
 
 A **Streamlit** dashboard (`py_dashboard.py`) reads live UART telemetry and displays:
 
@@ -168,7 +168,7 @@ Dashboard features:
 
 ---
 
-## 🗂️ Repository Structure
+## Repository Structure
 
 ```
 .
@@ -178,7 +178,7 @@ Dashboard features:
 │   └── py_dashboard.py         # Streamlit real-time monitoring UI
 ├── docs/
 │   └── MCP_PBL_Report.pdf      # Full project report
-├── assets/                     # Screenshots used in this README
+├── images/                     # Screenshots used in this README
 └── README.md
 ```
 
@@ -186,7 +186,7 @@ Dashboard features:
 
 ---
 
-## ⚙️ Tech Stack
+## Tech Stack
 
 - **MCU:** STM32F410RB (NUCLEO), STM32CubeIDE / HAL drivers
 - **Sensors:** MPU6050 (I2C accelerometer), INA219 (I2C current sensor)
@@ -197,7 +197,7 @@ Dashboard features:
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Firmware
 1. Open the project in **STM32CubeIDE**.
@@ -215,32 +215,19 @@ streamlit run dashboard/py_dashboard.py
 
 ---
 
-## 🔍 Key Findings
+## Key Findings
 
 - A lightweight incremental clustering model (ICM) achieved **95.21% balanced accuracy** while fitting in just 6 KB of RAM/Flash — well within reach of low-cost MCUs.
 - On-device learning (no cloud round-trip) enables the system to establish a new "healthy" baseline for any motor without manual labeling.
 - Execution time of 0.1 ms per cycle makes real-time, continuous monitoring feasible even on a modest Cortex-M4 part.
 - The similarity-score + rolling-average approach gives a simple, interpretable health signal (Healthy/Warning/Critical/Error) suitable for non-expert operators.
 
-## ⚠️ Limitations & Future Work
+## Limitations & Future Work
 
 - Faults were manually induced (imbalance, misalignment, speed variation) rather than captured from naturally degrading hardware — real-world fault progression may differ.
 - Current dataset is specific to one motor/driver setup; generalization to other motor types/sizes needs further validation.
 - Future work: wireless telemetry (BLE/Wi-Fi) instead of wired UART, on-device fault classification (not just anomaly/normal), and long-term field validation.
 
----
-
-## 👥 Team
-
-MCP PBL Project, Department of Electronics & Communication Engineering, RV College of Engineering (2025–26).
-
-| Name | USN |
-|---|---|
-| H N Khushi | 1RV24EC080 |
-| Manal Iqbal | 1RV24EC113 |
-| Dayananda Kanish Chinvar | 1RV24EC064 |
-
-**Guide:** Dr. Roopa J, Assistant Professor
 
 ---
 
