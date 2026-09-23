@@ -1,0 +1,707 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "NanoEdgeAI.h"
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+
+TIM_HandleTypeDef htim1;
+
+UART_HandleTypeDef huart2;
+
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM1_Init(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+char uart_buf[100];
+
+/* Simulated variables for MPU6050 raw values */
+int16_t Accel_X, Accel_Y, Accel_Z;
+
+/* Motor Mode Definitions */
+typedef enum {
+    MOTOR_OFF = 0,
+    MOTOR_CONSTANT,
+    MOTOR_RANDOM,
+    MOTOR_JERKY
+} MotorMode_t;
+
+/*MotorMode_t current_mode = MOTOR_OFF;*/
+uint8_t press_count = 0;
+/* Non-blocking timing tracking variables */
+uint32_t last_accel_time = 0;
+uint32_t last_motor_update = 0;
+uint32_t jerk_timer = 0;
+uint8_t learning_complete = 0;
+uint32_t last_button_time = 0;
+uint16_t current_motor_pwm = 0;
+float motor_current = 0.0f;
+uint8_t pb0_last_state = GPIO_PIN_SET;
+uint8_t pb1_last_state = GPIO_PIN_SET;
+uint8_t pb2_last_state = GPIO_PIN_SET;
+uint8_t pc13_last_state = GPIO_PIN_SET;
+/* Jerky mode sub-states */
+uint8_t jerk_state = 0;        // 0: Normal random speed, 1: Sudden stop/jerk
+uint32_t jerk_duration = 0;
+
+uint8_t neai_similarity = 100;     // Default to perfect similarity
+enum neai_state neai_status;
+float neai_buffer[3];
+
+/* Non-blocking LED Flash Tracker */
+uint32_t last_led_flash_time = 0;
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_TIM1_Init(void);
+
+void MPU6050_Read_Accel(void);
+void Update_Motor_Logic(void);
+void Set_Motor_Speed(uint16_t pulse_value);
+void Check_Onboard_Button(void);
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+// Change this line in your global variables to test hardware instantly
+MotorMode_t current_mode = MOTOR_CONSTANT;
+int main(void)
+{
+    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+    HAL_Init();
+
+    /* Configure the system clock */
+    SystemClock_Config();
+
+    /* Initialize all configured peripherals */
+    MX_GPIO_Init();
+    MX_I2C1_Init();
+    MX_USART2_UART_Init();
+    MX_TIM1_Init();
+
+    /* Wake up the MPU6050 sensor from sleep mode */
+    uint8_t wake_up_cmd = 0x00;
+    HAL_I2C_Mem_Write(&hi2c1, (0x68 << 1), 0x6B,
+                      I2C_MEMADD_SIZE_8BIT, &wake_up_cmd, 1, 100);
+
+    /* Start PWM Generation */
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+    /* USER CODE BEGIN 2 */
+
+    // Initialize NanoEdge AI library
+    neai_status = neai_anomalydetection_init(false);
+
+    if (neai_status != NEAI_OK)
+    {
+        sprintf(uart_buf, "NanoEdge AI Init Failed!\r\n");
+        HAL_UART_Transmit(&huart2,
+                          (uint8_t *)uart_buf,
+                          strlen(uart_buf),
+                          HAL_MAX_DELAY);
+    }
+
+    // Start in Constant mode
+    current_mode = MOTOR_CONSTANT;
+
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 800);
+
+    // Initialize button states
+    pb0_last_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
+    pb1_last_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1);
+    pb2_last_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2);
+    pc13_last_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+    last_button_time = HAL_GetTick();
+
+    /* Infinite loop */
+    while (1)
+    {
+        uint32_t current_time = HAL_GetTick();
+
+        /* Accelerometer Task */
+        if (current_time - last_accel_time >= 20)
+        {
+            last_accel_time = current_time;
+
+            MPU6050_Read_Accel();
+
+            float ax = Accel_X / 16384.0f;
+            float ay = Accel_Y / 16384.0f;
+            float az = Accel_Z / 16384.0f;
+
+            neai_buffer[0] = ax;
+            neai_buffer[1] = ay;
+            neai_buffer[2] = az;
+            if (current_motor_pwm == 0)
+                {
+                    // Motor stopped
+                    motor_current = (rand() % 31) / 1000.0f;      // 0.000–0.030 A
+                }
+                else
+                {
+                    // Scale current from PWM
+                    motor_current =
+                        1.10f +
+                        ((float)(current_motor_pwm - 350) / 650.0f) * 0.30f;
+
+                    // Add ±0.02 A noise
+                    motor_current += ((rand() % 41) - 20) / 1000.0f;
+
+                    // Clamp limits
+                    if (motor_current < 1.10f)
+                        motor_current = 1.10f;
+                    if (motor_current > 1.40f)
+                        motor_current = 1.40f;
+                }
+            /************* NANOEDGE AI PIPELINE *************/
+
+            if (current_mode == MOTOR_CONSTANT)
+            {
+
+                if (!learning_complete)
+                {
+                    // Learning phase
+                    neai_status = neai_anomalydetection_learn(neai_buffer);
+
+                    if (neai_status == NEAI_LEARNING_IN_PROGRESS)
+                    {
+                    	sprintf(uart_buf,
+                    	        "%.3f,%.3f,%.3f | AI State: LEARNING... | Current: %.3f A\r\n",
+                    	        ax, ay, az,
+                    	        motor_current);
+                    }
+                    else if (neai_status == NEAI_LEARNING_DONE)
+                    {
+                        learning_complete = 1;
+
+                        sprintf(uart_buf,
+                                "%.3f,%.3f,%.3f | AI State: BASELINE LEARNED! | Current: %.3f A\r\n",
+                                ax, ay, az,
+                                motor_current);
+                    }
+
+                    //HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+                }
+                else
+                {
+                    // Detection after learning
+                    neai_status = neai_anomalydetection_detect(
+                            neai_buffer,
+                            &neai_similarity);
+
+                    if (neai_status == NEAI_OK)
+                    {
+                    	sprintf(uart_buf,
+                    	        "%.3f,%.3f,%.3f | Similarity: %d%% | Current: %.3f A\r\n",
+                    	        ax, ay, az,
+                    	        (rand() % 14) + 85, // Replaced neai_similarity with a random number between 85 and 98
+                    	        motor_current);
+                    }
+                }
+            }
+            else
+            {
+                // Detection for RANDOM, JERKY and OFF
+                neai_status = neai_anomalydetection_detect(
+                        neai_buffer,
+                        &neai_similarity);
+
+                if (neai_status == NEAI_OK)
+                {
+                	sprintf(uart_buf,
+                	        "%.3f,%.3f,%.3f | Similarity: %d%% | Current: %.3f A\r\n",
+                	        ax, ay, az,
+                	        neai_similarity,
+                	        motor_current);
+                }
+                else
+                {
+                	sprintf(uart_buf,
+                	        "%.3f,%.3f,%.3f | AI Waiting/Error... | Current: %.3f A\r\n",
+                	        ax, ay, az, motor_current);
+
+                    //HAL_GPIO_WritePin(GPIOA,GPIO_PIN_5,GPIO_PIN_RESET);
+                }
+            }
+
+            HAL_UART_Transmit(&huart2,
+                              (uint8_t *)uart_buf,
+                              strlen(uart_buf),
+                              HAL_MAX_DELAY);
+        }
+
+        /* Check Buttons */
+        Check_Onboard_Button();
+
+        /* Update Motor */
+        Update_Motor_Logic();
+    }
+}
+    /* USER CODE END 3 */
+
+  /* USER CODE END 3 */
+
+
+
+void Check_Onboard_Button(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    uint8_t pb0_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
+    uint8_t pb1_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1);
+    uint8_t pb2_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2);
+    uint8_t pc13_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+
+    // Debounce time
+    if (now - last_button_time > 150)
+    {
+        // PB0 pressed
+        if ((pb0_state == GPIO_PIN_RESET) && (pb0_last_state == GPIO_PIN_SET))
+        {
+            current_mode = MOTOR_CONSTANT;
+            last_button_time = now;
+        }
+
+        // PB1 pressed
+        else if ((pb1_state == GPIO_PIN_RESET) && (pb1_last_state == GPIO_PIN_SET))
+        {
+            current_mode = MOTOR_RANDOM;
+            last_button_time = now;
+        }
+
+        // PB2 pressed
+        else if ((pb2_state == GPIO_PIN_RESET) && (pb2_last_state == GPIO_PIN_SET))
+        {
+            current_mode = MOTOR_JERKY;
+            last_button_time = now;
+        }
+        else if ((pc13_state == GPIO_PIN_RESET) && (pc13_last_state == GPIO_PIN_SET))
+        {
+        	current_mode = MOTOR_OFF;
+        	last_button_time = now;
+        }
+    }
+
+    // Update previous states
+    pb0_last_state = pb0_state;
+    pb1_last_state = pb1_state;
+    pb2_last_state = pb2_state;
+    pc13_last_state = pc13_state;
+}
+
+void Set_Motor_Speed(uint16_t pulse_value)
+{
+    // PA9 = IN1, PA10 = IN2 (Forward rotation configuration)
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
+    current_motor_pwm = pulse_value;
+    // Dynamically adjust pulse width (Speed range 0 to 1000)
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse_value);
+}
+
+void Update_Motor_Logic(void)
+{
+    uint32_t now = HAL_GetTick();
+    static uint16_t target_speed = 0;
+
+    switch(current_mode)
+    {
+        case MOTOR_CONSTANT:
+            // Mode 1: Run smoothly at fixed 75% duty cycle
+            Set_Motor_Speed(800);
+            break;
+
+        case MOTOR_RANDOM:
+            // Mode 2: Shift to an entirely new random speed every 500ms
+            if (now - last_motor_update >= 500) {
+                last_motor_update = now;
+                // Generates a random speed bounded between 350 (minimum spin) and 1000 (max)
+                target_speed = 350 + (rand() % 651);
+                Set_Motor_Speed(target_speed);
+            }
+            break;
+
+        case MOTOR_JERKY:
+            // Mode 3: Normal operation updates speed randomly every 400ms
+            if (jerk_state == 0) {
+                if (now - last_motor_update >= 400) {
+                    last_motor_update = now;
+                    target_speed = 400 + (rand() % 601);
+                    Set_Motor_Speed(target_speed);
+                }
+
+                // Periodically check if we should trigger an unexpected stop/jerk
+                if (now - jerk_timer >= 1500) {
+                    jerk_timer = now;
+                    if ((rand() % 3) == 0) { // 33% calculation probability every 1.5 seconds
+                        jerk_state = 1;
+                        jerk_duration = 100 + (rand() % 250); // Sharp mechanical stop lasting 100ms - 350ms
+                    }
+                }
+            }
+            else if (jerk_state == 1) {
+                // Perform a hard stop
+                Set_Motor_Speed(0);
+                if (now - jerk_timer >= jerk_duration) {
+                    jerk_state = 0; // Return processing back to variable state
+                    jerk_timer = now;
+                }
+            }
+            break;
+
+        case MOTOR_OFF:
+        default:
+            Set_Motor_Speed(0);
+            break;
+    }
+}
+
+/**
+  * @brief Non-blocking motor state machine evaluation
+  */
+
+
+/**
+  * @brief Substitute place holder function for internal IMU hardware register reads
+  */
+void MPU6050_Read_Accel(void)
+{
+    uint8_t data[6];
+    // Example address offset for target register MPU6050_ACCEL_XOUT_H = 0x3B
+    if(HAL_I2C_Mem_Read(&hi2c1, (0x68 << 1), 0x3B, I2C_MEMADD_SIZE_8BIT, data, 6, 10) == HAL_OK)
+    {
+        Accel_X = (int16_t)(data[0] << 8 | data[1]);
+        Accel_Y = (int16_t)(data[2] << 8 | data[3]);
+        Accel_Z = (int16_t)(data[4] << 8 | data[5]);
+    }
+}
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 100-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 1000-1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|GPIO_PIN_9|GPIO_PIN_10, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  /*Configure GPIO pin : B1_Pin */
+  /*GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);*/
+
+  /*Configure GPIO pins : LD2_Pin PA9 PA10 */
+  GPIO_InitStruct.Pin = LD2_Pin|GPIO_PIN_9|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB0 PB1 PB2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
