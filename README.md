@@ -1,4 +1,4 @@
-# Motor Anomaly Detection at the Edge (STM32 + NanoEdge AI)
+# Motor Anomaly Detection (STM32 + NanoEdge AI)
 
 Real-time predictive maintenance system that detects anomalies in DC motor vibration and current signatures **on-device**, using an ultra-lightweight ML model running directly on an STM32 microcontroller — no cloud, no GPU, just 6 KB of RAM and Flash.
 
@@ -172,19 +172,12 @@ Dashboard features:
 
 ```
 .
-├── firmware/
-│   └── main.c                  # STM32 application code (sensor read, motor control, NanoEdge AI calls)
-├── dashboard/
-│   └── py_dashboard.py         # Streamlit real-time monitoring UI
-├── docs/
-│   └── MCP_PBL_Report.pdf      # Full project report
-├── images/                     # Screenshots used in this README
+├──newmain.c.txt                
+├── py_dashboard.py
+├── images/
+├── LICENSE                
 └── README.md
 ```
-
-> Adjust paths above to match your actual repo layout.
-
----
 
 ## Tech Stack
 
@@ -194,24 +187,6 @@ Dashboard features:
 - **ML tooling:** NanoEdge AI Studio (ICM anomaly detection model)
 - **Communication:** UART2 @ 115200 baud
 - **Dashboard:** Python, Streamlit, PySerial, Pandas
-
----
-
-## Getting Started
-
-### Firmware
-1. Open the project in **STM32CubeIDE**.
-2. Flash `firmware/main.c` (and the generated NanoEdge AI library) to the STM32F410RB.
-3. Wire up MPU6050 (I2C1), INA219 (I2C2), and the L298N-driven DC motor per the hardware interfacing diagram.
-
-### Dashboard
-```bash
-pip install streamlit pyserial pandas
-streamlit run dashboard/py_dashboard.py
-```
-1. Connect the STM32 board via USB (UART2 bridged over ST-Link).
-2. Select the correct COM port and baud rate (115200) in the sidebar.
-3. Click **START** to begin live monitoring.
 
 ---
 
@@ -227,10 +202,3 @@ streamlit run dashboard/py_dashboard.py
 - Faults were manually induced (imbalance, misalignment, speed variation) rather than captured from naturally degrading hardware — real-world fault progression may differ.
 - Current dataset is specific to one motor/driver setup; generalization to other motor types/sizes needs further validation.
 - Future work: wireless telemetry (BLE/Wi-Fi) instead of wired UART, on-device fault classification (not just anomaly/normal), and long-term field validation.
-
-
----
-
-## 📄 License
-
-Add a license of your choice (e.g., MIT) before making the repository public.
